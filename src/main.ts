@@ -7,8 +7,6 @@ const boardWidth = rows[0].length;
 const boardHeight = rows.length;
 const workgroupSize = 256  ;
 async function main() {
-  document.querySelector<HTMLDivElement>('#app')!.innerHTML = ``;
-
   let inputData = new Uint32Array(boardWidth * boardHeight);
 
   for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
@@ -49,55 +47,57 @@ async function main() {
   // Define Shader
   const computeShaderCode = `
 struct Data {
-    data: array<u32>
+  data: array<u32>
 };
 
 @group(0) @binding(0) var<storage, read> src: Data;
 @group(0) @binding(1) var<storage, read_write> dst: Data;
 
 fn get_cell_state(x: u32, y: u32) -> u32 {
-    return src.data[x + y * ${boardWidth}]; 
+  return src.data[x + y * ${boardWidth}]; 
 }
 
 fn get_cell_state2(x: u32, y: u32) -> u32 {
-  return select(0u,1u, src.data[x + y * ${boardWidth}]==1);
+  return select(0u, 1u, src.data[x + y * ${boardWidth}] == 1);
 }
+
 @compute @workgroup_size(${workgroupSize})
-fn main(  @builtin(global_invocation_id) global_id: vec3<u32>) {
-    let current_state = src.data[global_id.x];
-     let x: u32 = global_id.x % ${boardWidth};
-    let y: u32 = global_id.x / ${boardWidth};
-
-    switch(current_state) {
-        case 0:
-{            dst.data[global_id.x] = 0;
-            break;
-}        case 1:
-{            dst.data[global_id.x] = 2;
-            break;
-}        case 2:
-{            dst.data[global_id.x] = 3;
-            break;
-}        default:
-{
-            var electron_head_count=get_cell_state2(x - 1, y - 1) +
-get_cell_state2(x    , y - 1) +
-get_cell_state2(x + 1, y - 1) +
-get_cell_state2(x - 1, y    ) +
-get_cell_state2(x + 1, y    ) +
-get_cell_state2(x - 1, y + 1) +
-get_cell_state2(x    , y + 1) +
-get_cell_state2(x + 1, y + 1) ;
-
-
-
-if(electron_head_count == 1 || electron_head_count == 2){
-dst.data[global_id.x]=1;
-}else{
-dst.data[global_id.x]=3;
-}
-            break;
-}    }
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+  let current_state = src.data[global_id.x];
+  let x: u32 = global_id.x % ${boardWidth};
+  let y: u32 = global_id.x / ${boardWidth};
+  
+  switch(current_state) {
+    case 0: {
+      dst.data[global_id.x] = 0;
+      break;
+    }
+    case 1: {
+      dst.data[global_id.x] = 2;
+      break;
+    }
+    case 2: {
+      dst.data[global_id.x] = 3;
+      break;
+    }
+    default: {
+      var electron_head_count=get_cell_state2(x - 1, y - 1) +
+                              get_cell_state2(x    , y - 1) +
+                              get_cell_state2(x + 1, y - 1) +
+                              get_cell_state2(x - 1, y    ) +
+                              get_cell_state2(x + 1, y    ) +
+                              get_cell_state2(x - 1, y + 1) +
+                              get_cell_state2(x    , y + 1) +
+                              get_cell_state2(x + 1, y + 1);
+      
+      if(electron_head_count == 1 || electron_head_count == 2){
+        dst.data[global_id.x]=1;
+      }else{
+        dst.data[global_id.x]=3;
+      }
+      break;
+    }
+  }
 }`;
 
   // Create pipeline
@@ -154,16 +154,8 @@ dst.data[global_id.x]=3;
     passEncoder.dispatchWorkgroups(Math.ceil(inputData.length / workgroupSize));
     passEncoder.end();
 
-    // let commandEncoder = device.createCommandEncoder();
-    // let passEncoder = commandEncoder.beginComputePass();
-    // passEncoder.setPipeline(pipeline);
-    // passEncoder.setBindGroup(0, bindGroup);
-    // passEncoder.dispatchWorkgroups(Math.ceil(inputData.length / workgroupSize));
-    // passEncoder.end();
 
-    // const commandEncoder2 = device.createCommandEncoder();
-    // commandEncoder2.copyBufferToBuffer(outputBuffer, 0, inputBuffer, 0, inputData.byteLength);
-    device.queue.submit([commandEncoder.finish() /*,commandEncoder2.finish()*/]);
+    device.queue.submit([commandEncoder.finish()]);
 
     timeRun = performance.now() - timeRun;
     msPerRun += timeRun;
@@ -247,6 +239,3 @@ function drawBack(context: CanvasRenderingContext2D, data: Uint32Array): void {
 
 main();
 
-function timeout(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
