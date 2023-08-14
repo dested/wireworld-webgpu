@@ -5,7 +5,7 @@ const rows = wireworldtxt.replace(new RegExp('\r', 'g'), '').split('\n');
 
 const boardWidth = rows[0].length;
 const boardHeight = rows.length;
-const workgroupSize = 256  ;
+const workgroupSize = 256;
 async function main() {
   let inputData = new Uint32Array(boardWidth * boardHeight);
 
@@ -64,9 +64,6 @@ fn get_cell_state2(x: u32, y: u32) -> u32 {
 @compute @workgroup_size(${workgroupSize})
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
   let current_state = src.data[global_id.x];
-  let x: u32 = global_id.x % ${boardWidth};
-  let y: u32 = global_id.x / ${boardWidth};
-  
   switch(current_state) {
     case 0: {
       dst.data[global_id.x] = 0;
@@ -81,6 +78,8 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
       break;
     }
     default: {
+      let x: u32 = global_id.x % ${boardWidth};
+      let y: u32 = global_id.x / ${boardWidth};
       var electron_head_count=get_cell_state2(x - 1, y - 1) +
                               get_cell_state2(x    , y - 1) +
                               get_cell_state2(x + 1, y - 1) +
@@ -142,11 +141,9 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
   let msPerRun = 0;
   let isAInput = true;
 
+  let timeRun = performance.now();
   while (true) {
-    let timeRun = performance.now();
     i++;
-    // Dispatch the shader
-
     let commandEncoder = device.createCommandEncoder();
     let passEncoder = commandEncoder.beginComputePass();
     passEncoder.setPipeline(pipeline);
@@ -154,13 +151,13 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     passEncoder.dispatchWorkgroups(Math.ceil(inputData.length / workgroupSize));
     passEncoder.end();
 
-
     device.queue.submit([commandEncoder.finish()]);
 
-    timeRun = performance.now() - timeRun;
-    msPerRun += timeRun;
-
     if (i % 5000 === 0) {
+      msPerRun += performance.now() - timeRun;
+      timeRun = performance.now();
+      console.log(msPerRun / i);
+
       commandEncoder = device.createCommandEncoder();
       commandEncoder.copyBufferToBuffer(
         isAInput ? inputBufferA : inputBufferB,
@@ -174,7 +171,6 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
       const readData = new Uint32Array(readbackBuffer.getMappedRange());
       draw(readData);
       readbackBuffer.unmap();
-      console.log(msPerRun / i);
     }
     isAInput = !isAInput;
   }
@@ -238,4 +234,3 @@ function drawBack(context: CanvasRenderingContext2D, data: Uint32Array): void {
 }
 
 main();
-
