@@ -1,57 +1,103 @@
 import wireworldtxt from './wireworld.txt?raw';
+import simpletxt from './simple.txt?raw';
 
+const rows = wireworldtxt.replace(new RegExp('\r', 'g'), '').split('\n');
+
+const boardWidth = rows[0].length;
+const boardHeight = rows.length;
+const workgroupSize = 256  ;
 async function main() {
-  document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
-<canvas/>
-`;
-  const rows = wireworldtxt.replace(new RegExp('\r', 'g'), '').split('\n');
-  /*
-  const canvas = document.querySelector('canvas');
-  if (!canvas) throw new Error('No adapter');
-  const adapter = await navigator.gpu.requestAdapter();
-  if (!adapter) throw new Error('No adapter');
-  const device = await adapter.requestDevice();
-  const context = canvas.getContext('webgpu');
-  if (!context) throw new Error('No context');*/
+  document.querySelector<HTMLDivElement>('#app')!.innerHTML = ``;
 
-  const boardWidth = rows[0].length;
-  const boardHeight = rows.length;
+  let inputData = new Uint32Array(boardWidth * boardHeight);
 
-  const data = new Uint8Array(boardWidth * boardHeight);
+  for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+    const row = rows[rowIndex];
+
+    for (let characterIndex = 0; characterIndex < row.length; characterIndex++) {
+      const character = row[characterIndex];
+      inputData[characterIndex + rowIndex * boardWidth] = charToState(character);
+    }
+  }
+
+  draw(inputData);
 
   // Create GPU context
   const adapter = (await navigator.gpu.requestAdapter())!;
   const device = await adapter!.requestDevice();
 
-  const inputData = new Uint8Array(1024).fill(1);
-  const inputBuffer = device.createBuffer({
+  let inputBufferA = device.createBuffer({
     size: inputData.byteLength,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
     mappedAtCreation: true,
   });
-  new Uint8Array(inputBuffer.getMappedRange()).set(inputData);
-  inputBuffer.unmap();
+  new Uint32Array(inputBufferA.getMappedRange()).set(inputData);
+  inputBufferA.unmap();
 
-  const outputBuffer = device.createBuffer({
+  let inputBufferB = device.createBuffer({
     size: inputData.byteLength,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+    mappedAtCreation: true,
   });
+  new Uint32Array(inputBufferB.getMappedRange()).set(inputData);
+  inputBufferB.unmap();
+
   const readbackBuffer = device.createBuffer({
     size: inputData.byteLength,
     usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
   });
   // Define Shader
   const computeShaderCode = `
- struct Data {
+struct Data {
     data: array<u32>
 };
 
 @group(0) @binding(0) var<storage, read> src: Data;
 @group(0) @binding(1) var<storage, read_write> dst: Data;
 
-@compute @workgroup_size(1)
+fn get_cell_state(x: u32, y: u32) -> u32 {
+    return src.data[x + y * ${boardWidth}]; 
+}
+
+fn get_cell_state2(x: u32, y: u32) -> u32 {
+  return select(0u,1u, src.data[x + y * ${boardWidth}]==1);
+}
+@compute @workgroup_size(${workgroupSize})
 fn main(  @builtin(global_invocation_id) global_id: vec3<u32>) {
-    dst.data[global_id.x] = src.data[global_id.x] * 5u;
+    let current_state = src.data[global_id.x];
+     let x: u32 = global_id.x % ${boardWidth};
+    let y: u32 = global_id.x / ${boardWidth};
+
+    switch(current_state) {
+        case 0:
+{            dst.data[global_id.x] = 0;
+            break;
+}        case 1:
+{            dst.data[global_id.x] = 2;
+            break;
+}        case 2:
+{            dst.data[global_id.x] = 3;
+            break;
+}        default:
+{
+            var electron_head_count=get_cell_state2(x - 1, y - 1) +
+get_cell_state2(x    , y - 1) +
+get_cell_state2(x + 1, y - 1) +
+get_cell_state2(x - 1, y    ) +
+get_cell_state2(x + 1, y    ) +
+get_cell_state2(x - 1, y + 1) +
+get_cell_state2(x    , y + 1) +
+get_cell_state2(x + 1, y + 1) ;
+
+
+
+if(electron_head_count == 1 || electron_head_count == 2){
+dst.data[global_id.x]=1;
+}else{
+dst.data[global_id.x]=3;
+}
+            break;
+}    }
 }`;
 
   // Create pipeline
@@ -65,38 +111,81 @@ fn main(  @builtin(global_invocation_id) global_id: vec3<u32>) {
     layout: 'auto',
   });
 
-  const bindGroup = device.createBindGroup({
+  const bindGroupA = device.createBindGroup({
     layout: pipeline.getBindGroupLayout(0),
     entries: [
       {
         binding: 0,
-        resource: {buffer: inputBuffer},
+        resource: {buffer: inputBufferA},
       },
       {
         binding: 1,
-        resource: {buffer: outputBuffer},
+        resource: {buffer: inputBufferB},
+      },
+    ],
+  });
+  const bindGroupB = device.createBindGroup({
+    layout: pipeline.getBindGroupLayout(0),
+    entries: [
+      {
+        binding: 0,
+        resource: {buffer: inputBufferB},
+      },
+      {
+        binding: 1,
+        resource: {buffer: inputBufferA},
       },
     ],
   });
 
-  // Dispatch the shader
-  const commandEncoder = device.createCommandEncoder();
-  const passEncoder = commandEncoder.beginComputePass();
-  passEncoder.setPipeline(pipeline);
-  passEncoder.setBindGroup(0, bindGroup);
-  passEncoder.dispatchWorkgroups(inputData.length);
-  passEncoder.end();
+  let i = 0;
+  let msPerRun = 0;
+  let isAInput = true;
 
-  commandEncoder.copyBufferToBuffer(outputBuffer, 0, readbackBuffer, 0, inputData.byteLength);
+  while (true) {
+    let timeRun = performance.now();
+    i++;
+    // Dispatch the shader
 
-  // Submit and readback
-  debugger;
-  device.queue.submit([commandEncoder.finish()]);
+    let commandEncoder = device.createCommandEncoder();
+    let passEncoder = commandEncoder.beginComputePass();
+    passEncoder.setPipeline(pipeline);
+    passEncoder.setBindGroup(0, isAInput ? bindGroupA : bindGroupB);
+    passEncoder.dispatchWorkgroups(Math.ceil(inputData.length / workgroupSize));
+    passEncoder.end();
 
-  await readbackBuffer.mapAsync(GPUMapMode.READ);
-  const readData = new Uint8Array(readbackBuffer.getMappedRange());
-  console.log(readData); // This should display a Uint8Array full of the value 5
-  readbackBuffer.unmap();
+    // let commandEncoder = device.createCommandEncoder();
+    // let passEncoder = commandEncoder.beginComputePass();
+    // passEncoder.setPipeline(pipeline);
+    // passEncoder.setBindGroup(0, bindGroup);
+    // passEncoder.dispatchWorkgroups(Math.ceil(inputData.length / workgroupSize));
+    // passEncoder.end();
+
+    // const commandEncoder2 = device.createCommandEncoder();
+    // commandEncoder2.copyBufferToBuffer(outputBuffer, 0, inputBuffer, 0, inputData.byteLength);
+    device.queue.submit([commandEncoder.finish() /*,commandEncoder2.finish()*/]);
+
+    timeRun = performance.now() - timeRun;
+    msPerRun += timeRun;
+
+    if (i % 5000 === 0) {
+      commandEncoder = device.createCommandEncoder();
+      commandEncoder.copyBufferToBuffer(
+        isAInput ? inputBufferA : inputBufferB,
+        0,
+        readbackBuffer,
+        0,
+        inputData.byteLength,
+      );
+      device.queue.submit([commandEncoder.finish()]);
+      await readbackBuffer.mapAsync(GPUMapMode.READ);
+      const readData = new Uint32Array(readbackBuffer.getMappedRange());
+      draw(readData);
+      readbackBuffer.unmap();
+      console.log(msPerRun / i);
+    }
+    isAInput = !isAInput;
+  }
 }
 
 export enum WireState {
@@ -118,5 +207,46 @@ function charToState(character: string): WireState {
       return WireState.Empty;
   }
 }
+let magnify = 1;
+
+function draw(data: Uint32Array) {
+  let canvasBack: HTMLCanvasElement;
+  let contextBack: CanvasRenderingContext2D;
+  // let canvasFront: HTMLCanvasElement;
+  // let contextFront: CanvasRenderingContext2D;
+  canvasBack = document.getElementById('canvasBack') as HTMLCanvasElement;
+  contextBack = canvasBack.getContext('2d') as CanvasRenderingContext2D;
+
+  // canvasFront = document.getElementById('canvasFront') as HTMLCanvasElement;
+  // contextFront = canvasFront.getContext('2d') as CanvasRenderingContext2D;
+  canvasBack.width = /*canvasFront.width =*/ boardWidth * magnify;
+  canvasBack.height = /* canvasFront.height = */ boardHeight * magnify;
+
+  drawBack(contextBack, data);
+}
+
+function drawBack(context: CanvasRenderingContext2D, data: Uint32Array): void {
+  context.fillStyle = '#000000';
+  context.fillRect(0, 0, boardWidth * magnify, boardHeight * magnify);
+
+  for (let y = 0; y < boardHeight; y++) {
+    for (let x = 0; x < boardWidth; x++) {
+      if (data[x + y * boardWidth] === 3) {
+        context.fillStyle = '#1000A8';
+        context.fillRect(x * magnify, y * magnify, magnify, magnify);
+      } else if (data[x + y * boardWidth] === 2) {
+        context.fillStyle = '#89D2FF';
+        context.fillRect(x * magnify, y * magnify, magnify, magnify);
+      } else if (data[x + y * boardWidth] === 1) {
+        context.fillStyle = '#FFF59B';
+        context.fillRect(x * magnify, y * magnify, magnify, magnify);
+      }
+    }
+  }
+}
 
 main();
+
+function timeout(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
